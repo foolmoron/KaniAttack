@@ -26,6 +26,7 @@ const buildOptions = {
   bundle: true,
   external: ['fs', 'path'],
   minify: !watch,
+  sourcemap: watch ? 'inline' : false,
   assetNames: '[name]',
   outfile: 'build/game.js',
   publicPath: 'build',

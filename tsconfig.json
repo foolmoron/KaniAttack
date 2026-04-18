@@ -5,6 +5,8 @@
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
+    "sourceMap": true,
+    "inlineSources": true,
     "lib": ["ES2023", "DOM"]
   },
   "include": ["src/**/*"]
