@@ -1,0 +1,17 @@
+# AGENTS.md
+
+## Platform
+
+- Engine: LittleJS
+- Language: TypeScript
+- Source folder: src/
+- Build folder: build/
+- Reference docs: @littlejs.md contains a cheat sheet for LittleJS
+
+## Coding Rules
+
+- **TypeScript:** Use TypeScript for source files
+- **Types:** Use interfaces for simple types especially inherited ones. Use algebraic types for more complicated ones including generics
+- **Classes:** Avoid. Use more functional and imperative structures.
+- **Comments:** Avoid. Only use them to explain _why_ something unintuitive is done, never _what_ it does.
+- **Naming:** Use camelCase for naming all files and variables, PascalCase for globals/statics.

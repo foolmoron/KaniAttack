@@ -1,0 +1,28 @@
+{
+  "name": "kaniattack",
+  "version": "1.0.0",
+  "description": "LittleJS game using MediaPipe",
+  "homepage": "https://github.com/foolmoron/KaniAttack#readme",
+  "bugs": {
+    "url": "https://github.com/foolmoron/KaniAttack/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/foolmoron/KaniAttack.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch"
+  },
+  "dependencies": {
+    "littlejsengine": "^1.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "esbuild-copy-static-files": "^0.1.0"
+  }
+}
