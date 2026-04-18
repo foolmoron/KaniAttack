@@ -16,13 +16,16 @@
   "main": "index.js",
   "scripts": {
     "build": "node build.mjs",
-    "dev": "node build.mjs --watch"
+    "dev": "node build.mjs --watch",
+    "format": "prettier --write ."
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.0",
     "littlejsengine": "^1.18.0"
   },
   "devDependencies": {
     "esbuild": "^0.28.0",
-    "esbuild-copy-static-files": "^0.1.0"
+    "esbuild-copy-static-files": "^0.1.0",
+    "prettier": "^3.8.3"
   }
 }
