@@ -17,9 +17,9 @@ let lastDetectTime = 0;
 let loopRunning = false;
 
 // Video capture parameters (tweakable)
-export const VIDEO_WIDTH = 320;
-export const VIDEO_HEIGHT = 240;
-export const VIDEO_ELEMENT_SCALE = 0.5;
+export const VIDEO_WIDTH = 160;
+export const VIDEO_HEIGHT = 120;
+export const VIDEO_ELEMENT_SCALE = 1.0;
 export const VIDEO_FPS = 15;
 export const VIDEO_FACING_MODE = 'user';
 export const VIDEO_OPACITY = '0.8';
@@ -102,7 +102,7 @@ export async function initHandTracking() {
 
     const vision = await FilesetResolver.forVisionTasks(WASM_URL);
     handLandmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL },
+      baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
       runningMode: 'VIDEO',
       numHands: 1,
       minHandDetectionConfidence: 0.3,
