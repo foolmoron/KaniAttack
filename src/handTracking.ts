@@ -9,6 +9,9 @@ interface Box2dNode extends LJS.Box2dObject {
   touching?: boolean;
   boundJoint?: LJS.Box2dWeldJoint | null;
   boundTimer?: number | null;
+  pendingBind?: LJS.Box2dObject | null;
+  bindCooldownUntil?: number | null;
+  lastBoundPos?: LJS.Vector2 | null;
 }
 
 // Hand tracking + crab overlay for KaniAttack
@@ -133,7 +136,16 @@ const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
 // fraction of collision-derived impulse applied to center (reduce explosions)
 const COLLISION_TRANSFER = 0.5;
 // how long (seconds) a tip stays rigidly bound to an object when it touches it
-const TIP_BIND_DURATION = 0.95;
+const TIP_BIND_DURATION = 0.15;
+// cooldown (seconds) after a tip is unbound before it can bind again
+const TIP_BIND_COOLDOWN = 0.3;
+// distance (world units) the tip must move away from the last bound position
+// before it is allowed to bind again
+const TIP_BIND_COOLDOWN_DISTANCE = 0.25;
+
+// queues for creating/destroying joints outside of Box2D contact callbacks
+const pendingBindRequests: Array<{ tip: Box2dNode; other: LJS.Box2dObject }> = [];
+const pendingUnbindRequests: Box2dNode[] = [];
 
 // multiplier applied to fingertip offset from hand center when computing
 // tip targets. Values >1 make fingers reach further from the detected center,
@@ -361,6 +373,9 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     tipTargetJoints.length = 0;
     centerTargetJoint = null;
     crabCenter = null;
+    // clear any pending deferred bind/unbind requests
+    pendingBindRequests.length = 0;
+    pendingUnbindRequests.length = 0;
   }
 
   // center body (dynamic movable ball)
@@ -475,34 +490,33 @@ export function initCrab(groundObject: LJS.Box2dObject) {
         crabCenter.applyAcceleration(impulseVec.copy().scale(-COLLISION_TRANSFER), tip.pos);
       }
 
-      // bind the tip to the contacted object with a rigid (weld) joint
+      // schedule binding the tip to the contacted object (defer joint creation
+      // until outside Box2D contact callback to avoid "world is locked" errors)
+      tip.touching = true;
       try {
-        if (tip.boundJoint) {
-          try {
-            tip.boundJoint.destroy();
-          } catch (e) {}
-          tip.boundJoint = null;
-        }
+        // reset or start the bind timer
         if (tip.boundTimer) {
           clearTimeout(tip.boundTimer);
           tip.boundTimer = null;
         }
-        const bind = new LJS.Box2dWeldJoint(tip, other, tip.pos);
-        tip.boundJoint = bind;
-        tip.boundTimer = window.setTimeout(() => {
-          if (tip.boundJoint) {
-            try {
-              tip.boundJoint.destroy();
-            } catch (e) {}
-            tip.boundJoint = null;
+        // queue a bind request if not already pending and not already bound
+        if (!tip.boundJoint && !pendingBindRequests.some((r) => r.tip === tip)) {
+          const now = performance.now();
+          const onCooldown = tip.bindCooldownUntil && now < tip.bindCooldownUntil;
+          const tooCloseToLast = tip.lastBoundPos && tip.pos.distance(tip.lastBoundPos) < TIP_BIND_COOLDOWN_DISTANCE;
+          if (!onCooldown && !tooCloseToLast) {
+            tip.pendingBind = other;
+            pendingBindRequests.push({ tip, other });
           }
+        }
+        // schedule unbind after TIP_BIND_DURATION
+        tip.boundTimer = window.setTimeout(() => {
+          pendingUnbindRequests.push(tip);
           tip.boundTimer = null;
         }, TIP_BIND_DURATION * 1000);
       } catch (e) {
-        console.warn('failed to create tip bind joint', e);
+        console.warn('failed to schedule tip bind', e);
       }
-
-      tip.touching = true;
     };
 
     tip.endContact = function (other: LJS.Box2dObject) {
@@ -582,6 +596,56 @@ function drawDebugOverlay() {
 }
 
 export function updateCrab() {
+  // process any pending unbind requests first so cooldowns are applied
+  if (pendingUnbindRequests.length) {
+    const now = performance.now();
+    for (const tip of pendingUnbindRequests) {
+      try {
+        if (!tip) continue;
+        if (tip.boundJoint) {
+          try {
+            tip.boundJoint.destroy();
+          } catch (e) {}
+          tip.boundJoint = null;
+        }
+        // start cooldown and remember last bound position
+        tip.bindCooldownUntil = now + TIP_BIND_COOLDOWN * 1000;
+        tip.lastBoundPos = tip.pos.copy();
+        tip.pendingBind = null;
+      } catch (e) {
+        console.warn('processing pending unbind failed', e);
+      }
+    }
+    pendingUnbindRequests.length = 0;
+  }
+
+  // process any pending bind requests queued by contact callbacks
+  if (pendingBindRequests.length) {
+    const now = performance.now();
+    for (const req of pendingBindRequests) {
+      try {
+        const tip = req.tip;
+        const other = req.other;
+        // skip if tip already bound or destroyed
+        if (!tip || tip.destroyed) continue;
+        if (tip.boundJoint) continue;
+        // re-check cooldown + distance at creation time
+        if (tip.bindCooldownUntil && now < tip.bindCooldownUntil) continue;
+        if (tip.lastBoundPos && tip.pos.distance(tip.lastBoundPos) < TIP_BIND_COOLDOWN_DISTANCE) continue;
+        // create the weld joint now (outside Box2D contact callback)
+        try {
+          const bind = new LJS.Box2dWeldJoint(tip, other, tip.pos);
+          tip.boundJoint = bind;
+        } catch (e) {
+          console.warn('failed to create deferred tip bind joint', e);
+        }
+        tip.pendingBind = null;
+      } catch (e) {
+        console.warn('processing pending bind failed', e);
+      }
+    }
+    pendingBindRequests.length = 0;
+  }
   // smooth detected hand center (use rawHandWorld computed from landmarks)
   smoothedHandCenter = smoothedHandCenter.scale(1 - SMOOTH_ALPHA).add(rawHandWorld.scale(SMOOTH_ALPHA));
 
