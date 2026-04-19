@@ -154,20 +154,20 @@ function gameRenderPost() {
     LJS.drawLine(LJS.mousePos, ab, 0.1, LJS.BLACK);
   }
 
-  // draw demo info
-  const pos = vec2(LJS.mainCanvasSize.x / 2, 50);
-  drawText('LittleJS Box2D Demo', 65, 70);
-  drawText(Scenes.sceneName, 50, 100);
-  if (Scenes.scene == 0) {
-    drawText('Mouse Left = Grab');
-    drawText('Mouse Middle or Z = Spawn');
-    drawText('Mouse Right or X = Explode');
-    drawText('Arrows Up/Down = Change Scene');
-  }
-  if (Scenes.scene == 3) {
-    drawText('Right = Accelerate');
-    drawText('Left = Reverse');
-  }
+  // // draw demo info
+  // const pos = vec2(LJS.mainCanvasSize.x / 2, 50);
+  // drawText('LittleJS Box2D Demo', 65, 70);
+  // drawText(Scenes.sceneName, 50, 100);
+  // if (Scenes.scene == 0) {
+  //   drawText('Mouse Left = Grab');
+  //   drawText('Mouse Middle or Z = Spawn');
+  //   drawText('Mouse Right or X = Explode');
+  //   drawText('Arrows Up/Down = Change Scene');
+  // }
+  // if (Scenes.scene == 3) {
+  //   drawText('Right = Accelerate');
+  //   drawText('Left = Reverse');
+  // }
 
   function drawText(text, size = 40, gap = 50) {
     LJS.drawTextScreen(text, pos, size, LJS.WHITE, size * 0.1);

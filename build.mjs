@@ -43,6 +43,11 @@ const buildOptions = {
         return !codeExtensions.has(extension) && !bundledAssetExtensions.has(extension);
       },
     }),
+    // copy MediaPipe runtime files from node_modules into build so locateFile can load them locally
+    copyStaticFiles({
+      src: './node_modules/@mediapipe/hands',
+      dest: './build/@mediapipe/hands',
+    }),
     copyStaticFiles({
       src: './node_modules/littlejsengine/plugins/box2d.wasm.js',
       dest: './build/box2d.wasm.js',
