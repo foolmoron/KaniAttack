@@ -61,7 +61,7 @@ const CENTER_TARGET_FREQUENCY = 8; // Hz (center spring)
 const CENTER_TARGET_MAX_FORCE = 800;
 const SMOOTH_ALPHA = 0.6; // exponential smoothing for landmark targets
 // Pull-to-center tuning
-const PULL_TRANSFER = 0.35; // fraction of tip pull impulse applied to center
+const PULL_TRANSFER = 0.85; // fraction of tip pull impulse applied to center
 const PULL_DAMPING_RATIO = 0.7; // damping ratio used when estimating tip damping
 const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
 // fraction of collision-derived impulse applied to center (reduce explosions)
@@ -74,7 +74,7 @@ const FINGER_LENGTH_MULTIPLIER = 0.65;
 const FINGER_OFFSET = vec2(0, -3);
 
 // maximum linear speed for the crab center (world units/sec). Set to 0 to disable.
-const CENTER_MAX_VELOCITY = 10.0;
+const CENTER_MAX_VELOCITY = 16.0;
 
 // Crab physics objects
 let crabCenter: LJS.Box2dObject | null = null;
