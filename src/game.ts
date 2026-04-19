@@ -34,6 +34,70 @@ export let spriteAtlas,
   repeatSpawnTimer = new LJS.Timer();
 const sound_click = new LJS.Sound([0.2, 0.1, , , , 0.01, , , , , , , , , , , , , , , -500]);
 
+// Pause / overlay state (controlled by hand tracking)
+let pauseReason = 'none' as HandTracking.HandStatus;
+let overlayVisible = false;
+let overlayMessage = '';
+let overlayAlpha = 0;
+let overlayShowUntil = 0;
+const OVERLAY_MIN_MS = 300;
+
+export function setGamePaused(paused: boolean, reason?: HandTracking.HandStatus) {
+  pauseReason = reason || 'none';
+  if (paused) {
+    overlayMessage = reasonToMessage(pauseReason);
+    showHandOverlay(overlayMessage);
+    LJS.setPaused(true);
+  } else {
+    LJS.setPaused(false);
+    hideHandOverlay();
+  }
+}
+
+function reasonToMessage(reason?: HandTracking.HandStatus) {
+  if (reason === 'bad') return 'HAND OBSCURED!!\nMove your hand more clearly in front of the camera';
+  return 'CONTROL WITH YOUR HAND!!\nHold hand about 12 inches away from the camera';
+}
+
+function showHandOverlay(message: string) {
+  overlayVisible = true;
+  overlayMessage = message;
+  overlayShowUntil = performance.now() + OVERLAY_MIN_MS;
+}
+
+function hideHandOverlay() {
+  overlayVisible = false;
+  overlayShowUntil = performance.now() + OVERLAY_MIN_MS;
+}
+
+function drawHandOverlay() {
+  // simple fade in/out
+  overlayAlpha += overlayVisible ? 0.15 : -0.15;
+  overlayAlpha = Math.max(0, Math.min(1, overlayAlpha));
+  if (!overlayVisible && overlayAlpha <= 0) return;
+
+  const w = Math.min(1000, LJS.mainCanvasSize.x - 200);
+  const h = 140;
+  const center = vec2(LJS.mainCanvasSize.x / 2, LJS.mainCanvasSize.y / 2);
+
+  // background box (screen-space)
+  LJS.drawCanvas2D(
+    center,
+    vec2(w, h),
+    0,
+    false,
+    (ctx) => {
+      ctx.fillStyle = `rgba(0,0,0,${0.6 * overlayAlpha})`;
+      ctx.fillRect(-0.5, -0.5, 1, 1);
+    },
+    true
+  );
+
+  // text (screen-space)
+  const fontSize = Math.floor(Math.min(48, LJS.mainCanvasSize.y * 0.04));
+  LJS.drawTextScreen(overlayMessage, center, fontSize, LJS.rgb(1, 1, 1, overlayAlpha), fontSize * 0.08, LJS.BLACK);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 function setScene(scene) {
   // setup
@@ -62,6 +126,14 @@ async function gameInit() {
   await LJS.box2dInit();
   // start hand tracking (hidden video + model). Fire-and-forget.
   HandTracking.initHandTracking();
+  // subscribe to hand status updates to control pause/overlay
+  HandTracking.onHandStatusChange((s) => {
+    if (s !== 'ok') {
+      setGamePaused(true, s);
+    } else {
+      setGamePaused(false);
+    }
+  });
   //LJS.box2dSetDebug(true); // enable box2d debug draw
 
   // create a table of all sprites
@@ -173,6 +245,8 @@ function gameRenderPost() {
     LJS.drawTextScreen(text, pos, size, LJS.WHITE, size * 0.1);
     pos.y += gap;
   }
+  // render hand overlay (if any)
+  drawHandOverlay();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

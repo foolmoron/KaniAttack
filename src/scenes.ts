@@ -129,7 +129,7 @@ export function loadScene(_scene) {
       // weld joint
       const o1 = GameObjects.spawnBox(vec2(15, 2), 4, LJS.randColor());
       const o2 = GameObjects.spawnBox(vec2(17, 2), 2, LJS.randColor());
-      new LJS.Box2dWeldJoint(o1, o2);
+      new LJS.Box2dWeldJoint(o1, o2, o1.pos);
     }
     {
       // distance joint

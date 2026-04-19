@@ -266,7 +266,7 @@ export class SoftBodyObject extends LJS.Box2dObject {
         const o = this.getNode(x, y);
         const tryAddJoint = (xo, yo) => {
           const o2 = this.getNode(x + xo, y + yo);
-          const joint = o2 ? new LJS.Box2dWeldJoint(o, o2) : 0;
+          const joint = o2 ? new LJS.Box2dWeldJoint(o, o2, o.pos) : 0;
           o.joints.push(joint);
         };
 

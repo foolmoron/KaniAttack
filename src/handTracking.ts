@@ -7,6 +7,8 @@ const { vec2, hsl, PI } = LJS;
 interface Box2dNode extends LJS.Box2dObject {
   prevVel?: LJS.Vector2;
   touching?: boolean;
+  boundJoint?: LJS.Box2dWeldJoint | null;
+  boundTimer?: number | null;
 }
 
 // Hand tracking + crab overlay for KaniAttack
@@ -47,6 +49,70 @@ let debugCanvas: HTMLCanvasElement | null = null;
 let debugCtx: CanvasRenderingContext2D | null = null;
 let lastLandmarks: any[] = [];
 
+// Hand presence / distance detection
+export type HandStatus = 'ok' | 'none' | 'bad';
+
+const BBOX_TOO_CLOSE = 0.18; // normalized bbox area above which hand is considered too close
+const BBOX_TOO_FAR = 0.03; // normalized bbox area below which hand is considered too far
+const HYSTERESIS_FRAMES = 10; // number of frames a candidate state must hold before committing
+
+let handStatus: HandStatus = 'ok';
+let pendingStatus: HandStatus = 'ok';
+let statusHoldFrames = 0;
+let lastStatusChangeTime = 0;
+const handStatusSubscribers: Set<(s: HandStatus) => void> = new Set();
+
+export function getHandStatus(): HandStatus {
+  return handStatus;
+}
+
+export function onHandStatusChange(cb: (s: HandStatus) => void): () => void {
+  handStatusSubscribers.add(cb);
+  // immediately call subscriber with current status
+  cb(handStatus);
+  return () => handStatusSubscribers.delete(cb);
+}
+
+function notifyHandStatus(s: HandStatus) {
+  handStatusSubscribers.forEach((cb) => cb(s));
+}
+
+function evaluateHandStatus() {
+  let candidate: HandStatus = 'ok';
+  if (!lastLandmarks || lastLandmarks.length === 0) {
+    candidate = 'none';
+  } else {
+    // let minX = 1,
+    //   maxX = 0,
+    //   minY = 1,
+    //   maxY = 0;
+    // for (const p of lastLandmarks) {
+    //   if (!p) continue;
+    //   minX = Math.min(minX, p.x);
+    //   maxX = Math.max(maxX, p.x);
+    //   minY = Math.min(minY, p.y);
+    //   maxY = Math.max(maxY, p.y);
+    // }
+    // const area = Math.max(0, maxX - minX) * Math.max(0, maxY - minY);
+    // if (area > BBOX_TOO_CLOSE) candidate = 'bad';
+    // else
+    candidate = 'ok';
+  }
+
+  if (candidate !== pendingStatus) {
+    pendingStatus = candidate;
+    statusHoldFrames = 1;
+  } else {
+    statusHoldFrames++;
+  }
+
+  if (pendingStatus !== handStatus && statusHoldFrames >= HYSTERESIS_FRAMES) {
+    handStatus = pendingStatus;
+    lastStatusChangeTime = performance.now();
+    notifyHandStatus(handStatus);
+  }
+}
+
 // Tuning constants for springs and targets
 // make limb distance joints stiffer so collisions better transmit force to center
 const DIST_JOINT_FREQUENCY = 10; // Hz
@@ -66,6 +132,8 @@ const PULL_DAMPING_RATIO = 0.7; // damping ratio used when estimating tip dampin
 const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
 // fraction of collision-derived impulse applied to center (reduce explosions)
 const COLLISION_TRANSFER = 0.5;
+// how long (seconds) a tip stays rigidly bound to an object when it touches it
+const TIP_BIND_DURATION = 0.95;
 
 // multiplier applied to fingertip offset from hand center when computing
 // tip targets. Values >1 make fingers reach further from the detected center,
@@ -194,6 +262,7 @@ function detectLoop(now?: number) {
         const lm = res.landmarks[0];
         // copy landmarks for debug overlay (normalized coordinates)
         lastLandmarks = lm.map((p: any) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
+        evaluateHandStatus();
         for (let i = 0; i < 4; i++) {
           const idx = fingertipIndices[i];
           const l = lm[idx];
@@ -208,6 +277,7 @@ function detectLoop(now?: number) {
         }
       } else {
         lastLandmarks = [];
+        evaluateHandStatus();
       }
     } catch (e) {
       console.warn('detectForVideo error', e);
@@ -264,7 +334,23 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     tipTargetJoints.forEach((j) => j && j.destroy());
     if (centerTargetJoint) centerTargetJoint.destroy();
     limbDistanceJoints.forEach((arr) => arr.forEach((j) => j && j.destroy()));
-    limbNodes.forEach((arr) => arr.forEach((o) => o && o.destroy()));
+    limbNodes.forEach((arr) =>
+      arr.forEach((o) => {
+        if (!o) return;
+        const n = o as Box2dNode;
+        if (n.boundJoint) {
+          try {
+            n.boundJoint.destroy();
+          } catch (e) {}
+          n.boundJoint = null;
+        }
+        if (n.boundTimer) {
+          clearTimeout(n.boundTimer);
+          n.boundTimer = null;
+        }
+        o.destroy();
+      })
+    );
     if (rootAnchor) {
       rootAnchor.destroy();
       rootAnchor = null;
@@ -365,6 +451,8 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     tipTargetJoints.push(tj);
 
     nodes[3].touching = false;
+    nodes[3].boundJoint = null;
+    nodes[3].boundTimer = null;
 
     // install contact callbacks on the tip to track touching and transfer collision impulses
     const tip = nodes[3];
@@ -384,8 +472,36 @@ export function initCrab(groundObject: LJS.Box2dObject) {
       const speed = Math.hypot(preVel.x || 0, preVel.y || 0);
       if (speed > 0.05) {
         const impulseVec = preVel.copy().scale(-tip.getMass());
-        crabCenter.applyAcceleration(impulseVec.copy().scale(COLLISION_TRANSFER), tip.pos);
+        crabCenter.applyAcceleration(impulseVec.copy().scale(-COLLISION_TRANSFER), tip.pos);
       }
+
+      // bind the tip to the contacted object with a rigid (weld) joint
+      try {
+        if (tip.boundJoint) {
+          try {
+            tip.boundJoint.destroy();
+          } catch (e) {}
+          tip.boundJoint = null;
+        }
+        if (tip.boundTimer) {
+          clearTimeout(tip.boundTimer);
+          tip.boundTimer = null;
+        }
+        const bind = new LJS.Box2dWeldJoint(tip, other, tip.pos);
+        tip.boundJoint = bind;
+        tip.boundTimer = window.setTimeout(() => {
+          if (tip.boundJoint) {
+            try {
+              tip.boundJoint.destroy();
+            } catch (e) {}
+            tip.boundJoint = null;
+          }
+          tip.boundTimer = null;
+        }, TIP_BIND_DURATION * 1000);
+      } catch (e) {
+        console.warn('failed to create tip bind joint', e);
+      }
+
       tip.touching = true;
     };
 
