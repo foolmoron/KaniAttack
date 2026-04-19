@@ -17,6 +17,7 @@ import * as GameObjects from './gameObjects';
 import * as Scenes from './scenes';
 import tilesPng from './tiles.png';
 import * as HandTracking from './handTracking';
+import * as Constants from './constants';
 const { vec2, hsl } = LJS;
 
 // use HD textures
@@ -32,6 +33,7 @@ export let spriteAtlas,
   groundObject,
   mouseJoint,
   repeatSpawnTimer = new LJS.Timer();
+let cameraPos = vec2(20, 10);
 const sound_click = new LJS.Sound([0.2, 0.1, , , , 0.01, , , , , , , , , , , , , , , -500]);
 
 // Pause / overlay state (controlled by hand tracking)
@@ -102,16 +104,19 @@ function drawHandOverlay() {
 function setScene(scene) {
   // setup
   LJS.setCameraPos(vec2(20, 10));
+  cameraPos = vec2(20, 10);
   LJS.setGravity(vec2(0, -20));
 
   // destroy old scene
   LJS.engineObjectsDestroy();
   mouseJoint = 0;
 
-  // create walls
+  // create walls (right wall placed according to level width)
   groundObject = GameObjects.spawnBox(vec2(0, -4), vec2(1e3, 8), hsl(0, 0, 0.2), LJS.box2d.bodyTypeStatic);
   GameObjects.spawnBox(vec2(-4, 0), vec2(8, 1e3), LJS.BLACK, LJS.box2d.bodyTypeStatic);
-  GameObjects.spawnBox(vec2(44, 0), vec2(8, 1e3), LJS.BLACK, LJS.box2d.bodyTypeStatic);
+  const levelScreens = scene === 3 ? Constants.SCENE3_SCREENS : 1;
+  const levelWidth = Constants.LEVEL_SCREEN_UNITS * levelScreens;
+  GameObjects.spawnBox(vec2(levelWidth + 4, 0), vec2(8, 1e3), LJS.BLACK, LJS.box2d.bodyTypeStatic);
   GameObjects.spawnBox(vec2(0, 100), vec2(1e3, 8), LJS.BLACK, LJS.box2d.bodyTypeStatic);
 
   // load the scene
@@ -194,6 +199,21 @@ function gameUpdate() {
   }
   // update crab overlay (finger-driven targets)
   HandTracking.updateCrab();
+
+  // camera follow (smooth exponential lerp towards crab X, clamped to level bounds)
+  try {
+    const levelScreens = Scenes.scene === 3 ? Constants.SCENE3_SCREENS : 1;
+    const levelWidth = Constants.LEVEL_SCREEN_UNITS * levelScreens;
+    const halfScreen = Constants.LEVEL_SCREEN_UNITS / 2;
+    const crabPos = HandTracking.getCrabPos();
+    const targetX = LJS.clamp(crabPos.x, halfScreen, Math.max(halfScreen, levelWidth - halfScreen));
+    const dt = (globalThis as any).timeDelta || 1 / 60;
+    const alpha = 1 - Math.exp(-Constants.CAMERA_SMOOTHNESS * dt);
+    cameraPos.x += (targetX - cameraPos.x) * alpha;
+    LJS.setCameraPos(cameraPos);
+  } catch (e) {
+    // ignore if crab not initialized yet
+  }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

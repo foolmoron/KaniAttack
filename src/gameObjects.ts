@@ -9,6 +9,7 @@
 // import LittleJS module
 import * as LJS from 'littlejsengine';
 import * as Game from './game.js';
+import * as Constants from './constants.js';
 const { vec2, hsl } = LJS;
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -72,15 +73,7 @@ export function spawnDominoes(pos, count, size = vec2(0.5, 3)) {
   for (let i = count; i--; ) spawnBox(pos.add(vec2(i * size.y * 0.9, size.y / 2)), size, LJS.randColor());
 }
 
-export function spawnRandomEdges() {
-  // edge list along bottom
-  const edgePoints = [];
-  edgePoints.push(vec2(40, 0));
-  for (let i = 40, y = 0; i--; ) edgePoints.push(vec2(i, (y = LJS.clamp(y + LJS.rand(-2, 2), 0, 5))));
-  edgePoints.push(vec2());
-  const o = new LJS.Box2dStaticObject();
-  o.addEdgeList(edgePoints);
-}
+export function spawnRandomEdges(width = Constants.LEVEL_SCREEN_UNITS) {}
 
 export function spawnRope(startPos, count, angle = PI, color = LJS.WHITE, size = vec2(0.3, 1)) {
   let lastObject = Game.groundObject;

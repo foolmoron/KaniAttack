@@ -20,6 +20,7 @@
 // import game module
 import * as LJS from 'littlejsengine';
 import * as GameObjects from './gameObjects.js';
+import * as Constants from './constants.js';
 import * as Game from './game.js';
 const { vec2 } = LJS;
 
@@ -53,9 +54,46 @@ export function loadScene(_scene) {
   }
   if (scene == 3) {
     sceneName = 'Car';
+    // make this scene wider and add randomized ground bumps across its width
+    const levelWidth = Constants.LEVEL_SCREEN_UNITS * Constants.SCENE3_SCREENS;
+    GameObjects.spawnRandomEdges(levelWidth);
+    // floating title (world-space) positioned near the left/start of the level
+    {
+      const titleX = 12;
+      const titlePos = vec2(titleX, 18);
+      const titleObj = new LJS.EngineObject(titlePos, vec2(1), 0, 0, LJS.WHITE);
+      titleObj.gravityScale = 0;
+      titleObj.renderOrder = -2; // try to render behind most objects/crab
+      titleObj.render = function () {
+        LJS.drawText('KANI KANI TE', this.pos, 3, LJS.WHITE, 0.36, LJS.BLACK);
+        LJS.drawText('カニカニ手', this.pos.add(vec2(0, -3)), 2, LJS.WHITE, 0.24, LJS.BLACK);
+      };
+    }
     new GameObjects.CarObject(vec2(10, 2));
     GameObjects.spawnBox(vec2(20, 0), vec2(10, 2), LJS.randColor(), LJS.box2d.bodyTypeStatic, false, -0.2);
     GameObjects.spawnPyramid(vec2(32, 0), 6);
+    // scatter random rectangles (random size + rotation)
+    for (let i = 0; i < 60; ++i) {
+      const x = LJS.rand(1, Math.max(2, levelWidth - 1));
+      const y = LJS.rand(2, 14);
+      const sx = LJS.rand(0.5, 4);
+      const sy = LJS.rand(0.5, 4);
+      const angle = LJS.rand(-LJS.PI, LJS.PI);
+      // make these rectangles static and render with outline texture
+      GameObjects.spawnBox(vec2(x, y), vec2(sx, sy), LJS.randColor(), LJS.box2d.bodyTypeStatic, false, angle);
+    }
+    // spawn a few cars across the level
+    for (let i = 0; i < 6; ++i) {
+      const cx = LJS.rand(5, Math.max(6, levelWidth - 5));
+      new GameObjects.CarObject(vec2(cx, 2));
+    }
+    // spawn many small squares
+    for (let i = 0; i < 80; ++i) {
+      const x = LJS.rand(1, Math.max(2, levelWidth - 1));
+      const y = LJS.rand(10, 25);
+      const s = LJS.rand(0.3, 1.2);
+      GameObjects.spawnBox(vec2(x, y), s, LJS.randColor());
+    }
   }
   if (scene == 4) {
     sceneName = 'Rope';

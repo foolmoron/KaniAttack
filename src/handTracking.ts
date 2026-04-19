@@ -2,6 +2,7 @@
 
 import { HandLandmarker } from '@mediapipe/tasks-vision';
 import * as LJS from 'littlejsengine';
+import * as RenderHelpers from './renderHelpers.js';
 const { vec2, hsl, PI } = LJS;
 
 interface Box2dNode extends LJS.Box2dObject {
@@ -136,12 +137,43 @@ const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
 // fraction of collision-derived impulse applied to center (reduce explosions)
 const COLLISION_TRANSFER = 0.5;
 // how long (seconds) a tip stays rigidly bound to an object when it touches it
-const TIP_BIND_DURATION = 0.15;
+const TIP_BIND_DURATION = 0.2;
 // cooldown (seconds) after a tip is unbound before it can bind again
-const TIP_BIND_COOLDOWN = 0.3;
+const TIP_BIND_COOLDOWN = 0.2;
 // distance (world units) the tip must move away from the last bound position
 // before it is allowed to bind again
-const TIP_BIND_COOLDOWN_DISTANCE = 0.25;
+const TIP_BIND_COOLDOWN_DISTANCE = 0.2;
+
+// Crab visual constants (visuals only — do not change physics)
+const CRAB_FILL = hsl(0.08, 0.95, 0.55); // orange fill
+const CRAB_STROKE = hsl(0.08, 0.95, 0.33); // darker orange outline
+const CRAB_OUTLINE_WIDTH = 0.06;
+const CRAB_HEAD_SIZE = vec2(2.6, 1.6);
+const CRAB_HEAD_RADIUS = 0.28;
+const CRAB_SEGMENT_THICKNESS = 0.45;
+const CRAB_SEGMENT_RADIUS = 0.22;
+const CRAB_TIP_BASE = 0.7;
+const CRAB_TIP_HEIGHT = 0.9;
+
+// helper to determine if an object is effectively static
+function isStaticObject(o: any) {
+  if (!o) return false;
+  try {
+    // explicit static class
+    if (o instanceof LJS.Box2dStaticObject) return true;
+  } catch (e) {}
+  // check underlying Box2D body type if available
+  try {
+    if (o.body && typeof o.body.getType === 'function' && typeof LJS.box2d !== 'undefined') {
+      return o.body.getType() === LJS.box2d.bodyTypeStatic;
+    }
+  } catch (e) {}
+  // fallback: static objects often have zero mass
+  try {
+    if (typeof o.getMass === 'function') return o.getMass() === 0;
+  } catch (e) {}
+  return false;
+}
 
 // queues for creating/destroying joints outside of Box2D contact callbacks
 const pendingBindRequests: Array<{ tip: Box2dNode; other: LJS.Box2dObject }> = [];
@@ -381,6 +413,7 @@ export function initCrab(groundObject: LJS.Box2dObject) {
   // center body (dynamic movable ball)
   crabCenter = new LJS.Box2dObject(vec2(20, 10), vec2(2), 0, 0, hsl(0.6, 0.6, 0.45), LJS.box2d.bodyTypeDynamic);
   crabCenter.addCircle(1.8);
+  crabCenter.render = () => {};
   // higher mass so limbs must push to lift it (center moved only by impulses)
   crabCenter.setMass(12);
   crabCenter.setLinearDamping(1);
@@ -420,6 +453,7 @@ export function initCrab(groundObject: LJS.Box2dObject) {
         LJS.box2d.bodyTypeDynamic
       );
       node.addCircle(0.6, vec2(), 1, 0.5, 0.2);
+      node.render = () => {};
       node.setLinearDamping(3);
       node.setAngularDamping(4);
       node.setBullet(true);
@@ -487,7 +521,7 @@ export function initCrab(groundObject: LJS.Box2dObject) {
       const speed = Math.hypot(preVel.x || 0, preVel.y || 0);
       if (speed > 0.05) {
         const impulseVec = preVel.copy().scale(-tip.getMass());
-        crabCenter.applyAcceleration(impulseVec.copy().scale(-COLLISION_TRANSFER), tip.pos);
+        // crabCenter.applyAcceleration(impulseVec.copy().scale(-COLLISION_TRANSFER), tip.pos);
       }
 
       // schedule binding the tip to the contacted object (defer joint creation
@@ -499,12 +533,12 @@ export function initCrab(groundObject: LJS.Box2dObject) {
           clearTimeout(tip.boundTimer);
           tip.boundTimer = null;
         }
-        // queue a bind request if not already pending and not already bound
+        // queue a bind request only for static objects (tips should only stick to static geometry)
         if (!tip.boundJoint && !pendingBindRequests.some((r) => r.tip === tip)) {
           const now = performance.now();
           const onCooldown = tip.bindCooldownUntil && now < tip.bindCooldownUntil;
           const tooCloseToLast = tip.lastBoundPos && tip.pos.distance(tip.lastBoundPos) < TIP_BIND_COOLDOWN_DISTANCE;
-          if (!onCooldown && !tooCloseToLast) {
+          if (!onCooldown && !tooCloseToLast && isStaticObject(other)) {
             tip.pendingBind = other;
             pendingBindRequests.push({ tip, other });
           }
@@ -713,11 +747,44 @@ export function renderCrab() {
     return;
   }
 
-  // draw center ball
-  LJS.drawCircle(crabCenter.pos, 1.8, hsl(0.6, 0.6, 0.45));
+  for (let i = 0; i < 4; i++) {
+    const nodes = limbNodes[i];
+    if (!nodes || nodes.length === 0) {
+      continue;
+    }
 
-  // draw spring from hand center to crab center
-  LJS.drawLine(crabCenter.pos, smoothedHandCenter, 0.12, hsl(0.1, 0.8, 0.6, 0.6));
+    // rounded segment from center to first node
+    RenderHelpers.drawSegmentRoundedRect(
+      crabCenter.pos,
+      nodes[0].pos,
+      CRAB_SEGMENT_THICKNESS,
+      CRAB_SEGMENT_RADIUS,
+      CRAB_FILL,
+      CRAB_STROKE,
+      CRAB_OUTLINE_WIDTH
+    );
+
+    for (let j = 0; j < nodes.length; j++) {
+      const node = nodes[j];
+      if (!node) {
+        continue;
+      }
+      // connection to next node as rounded rectangle
+      if (j < nodes.length - 1) {
+        RenderHelpers.drawSegmentRoundedRect(
+          node.pos,
+          nodes[j + 1].pos,
+          CRAB_SEGMENT_THICKNESS,
+          CRAB_SEGMENT_RADIUS,
+          CRAB_FILL,
+          CRAB_STROKE,
+          CRAB_OUTLINE_WIDTH
+        );
+      }
+      // draw joint node as small orange circle with darker outline
+      LJS.drawCircle(node.pos, 0.5, CRAB_FILL, CRAB_OUTLINE_WIDTH, CRAB_STROKE);
+    }
+  }
 
   for (let i = 0; i < 4; i++) {
     const nodes = limbNodes[i];
@@ -725,26 +792,39 @@ export function renderCrab() {
       continue;
     }
 
-    // line from center to first node
-    LJS.drawLine(crabCenter.pos, nodes[0].pos, 0.12, LJS.BLACK);
-
-    for (let j = 0; j < nodes.length; j++) {
-      const node = nodes[j];
-      if (!node) {
-        continue;
-      }
-      // connection to next node
-      if (j < nodes.length - 1) {
-        LJS.drawLine(node.pos, nodes[j + 1].pos, 0.12, LJS.BLACK);
-      }
-      // draw node as small circle
-      LJS.drawCircle(node.pos, 0.5, hsl(i / 4, 0.8, 0.5));
-    }
-
-    // draw fingertip debug target as a thin line from tip to the computed target
     const tip = nodes[nodes.length - 1];
     if (tip) {
-      LJS.drawLine(tip.pos, tipWorldTargets[i] || smoothedFingerWorld[i], 0.06, hsl(i / 4, 1, 0.6, 0.7));
+      const prev = nodes.length >= 2 ? nodes[nodes.length - 2] : crabCenter;
+      const dir = tip.pos.subtract(prev.pos).normalize();
+      const ang = Math.atan2(dir.y, dir.x);
+      RenderHelpers.drawIsoscelesTriangle(
+        tip.pos.add(dir.scale(0.5)),
+        CRAB_TIP_BASE,
+        CRAB_TIP_HEIGHT,
+        ang,
+        CRAB_FILL,
+        CRAB_STROKE,
+        CRAB_OUTLINE_WIDTH
+      );
+
+      // debug line to computed fingertip target (kept for guidance)
+      // LJS.drawLine(tip.pos, tipWorldTargets[i] || smoothedFingerWorld[i], 0.06, hsl(i / 4, 1, 0.6, 0.7));
     }
   }
+
+  // draw stylized head (rounded rectangle) with googly eyes
+  RenderHelpers.drawRoundedRect(
+    crabCenter.pos,
+    CRAB_HEAD_SIZE,
+    0,
+    CRAB_HEAD_RADIUS,
+    CRAB_FILL,
+    CRAB_STROKE,
+    CRAB_OUTLINE_WIDTH
+  );
+  RenderHelpers.drawGooglyEyes(crabCenter.pos, CRAB_HEAD_SIZE, smoothedHandCenter);
+}
+
+export function getCrabPos() {
+  return crabCenter ? crabCenter.pos.copy() : vec2(20, 10);
 }
