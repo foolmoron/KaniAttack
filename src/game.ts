@@ -27,7 +27,7 @@ LJS.setTilesPixelated(false);
 // game variables
 
 const sceneCount = 12;
-const startScene = 0;
+const startScene = 3;
 export let spriteAtlas,
   groundObject,
   mouseJoint,

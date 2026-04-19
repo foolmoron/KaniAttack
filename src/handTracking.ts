@@ -4,9 +4,14 @@ import { HandLandmarker } from '@mediapipe/tasks-vision';
 import * as LJS from 'littlejsengine';
 const { vec2, hsl, PI } = LJS;
 
+interface Box2dNode extends LJS.Box2dObject {
+  prevVel?: LJS.Vector2;
+  touching?: boolean;
+}
+
 // Hand tracking + crab overlay for KaniAttack
-// - Uses MediaPipe Hand Landmarker to get 5 fingertip positions
-// - Spawns a central crab body with 5 limb tips
+// - Uses MediaPipe Hand Landmarker to get 4 fingertip positions (ignores thumb)
+// - Spawns a central crab body with 4 limb tips
 // - Each limb tip is connected to the center with a distance joint
 // - Each limb tip also has a TargetJoint that is driven toward the fingertip world position
 
@@ -18,8 +23,8 @@ let lastDetectTime = 0;
 let loopRunning = false;
 
 // Video capture parameters (tweakable)
-export const VIDEO_WIDTH = 120;
-export const VIDEO_HEIGHT = 80;
+export const VIDEO_WIDTH = 160;
+export const VIDEO_HEIGHT = 120;
 export const VIDEO_ELEMENT_SCALE = 1.0;
 export const VIDEO_FPS = 24;
 export const VIDEO_FACING_MODE = 'user';
@@ -29,10 +34,13 @@ const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm';
 
-const fingertipIndices = [4, 8, 12, 16, 20]; // thumb, index, middle, ring, pinky
+// Use only the 4 non-thumb fingertips: index, middle, ring, pinky
+const fingertipIndices = [8, 12, 16, 20]; // index, middle, ring, pinky
 
 // last known fingertip world positions (mapped into game world coords)
-const fingerWorld = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
+const fingerWorld = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
+// previous raw fingertip world positions (used to compute per-tick landmark deltas)
+const prevFingerWorld = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
 
 // Debug overlay: canvas and last normalized landmarks from MediaPipe
 let debugCanvas: HTMLCanvasElement | null = null;
@@ -47,25 +55,41 @@ const DIST_JOINT_DAMPING = 0.2; // damping ratio
 const TARGET_JOINT_FREQUENCY = 15; // Hz (tip joints)
 // increased max force so tip target joints can push off the world and
 // transfer significant impulses to the crab center
-const TARGET_JOINT_MAX_FORCE = 1200;
+// (lower default to make interactions less explosive)
+const TARGET_JOINT_MAX_FORCE = 800;
 const CENTER_TARGET_FREQUENCY = 8; // Hz (center spring)
 const CENTER_TARGET_MAX_FORCE = 800;
 const SMOOTH_ALPHA = 0.6; // exponential smoothing for landmark targets
+// Pull-to-center tuning
+const PULL_TRANSFER = 0.35; // fraction of tip pull impulse applied to center
+const PULL_DAMPING_RATIO = 0.7; // damping ratio used when estimating tip damping
+const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
+// fraction of collision-derived impulse applied to center (reduce explosions)
+const COLLISION_TRANSFER = 0.5;
+
+// multiplier applied to fingertip offset from hand center when computing
+// tip targets. Values >1 make fingers reach further from the detected center,
+// values <1 pull them closer.
+const FINGER_LENGTH_MULTIPLIER = 0.65;
+const FINGER_OFFSET = vec2(0, -3);
+
+// maximum linear speed for the crab center (world units/sec). Set to 0 to disable.
+const CENTER_MAX_VELOCITY = 10.0;
 
 // Crab physics objects
 let crabCenter: LJS.Box2dObject | null = null;
 // kinematic anchor used to attach limb roots so joints don't move the center
 let rootAnchor: LJS.Box2dObject | null = null;
 // limbNodes[limbIndex] = array of 4 nodes (node0..node3 where node3 is the tip)
-const limbNodes: LJS.Box2dObject[][] = [];
+const limbNodes: Box2dNode[][] = [];
 // limbDistanceJoints[limbIndex] = array of 4 distance joints (center->node0, node0->node1, node1->node2, node2->node3)
-const limbDistanceJoints: LJS.Box2dObject[][] = [];
+const limbDistanceJoints: LJS.Box2dDistanceJoint[][] = [];
 // target joints for each tip (node3)
 const tipTargetJoints: LJS.Box2dTargetJoint[] = [];
 // smoothed landmark targets used to drive target joints
-const smoothedFingerWorld = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
+const smoothedFingerWorld = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
 // computed world targets for tips (mapped relative to the crab center)
-const tipWorldTargets = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
+const tipWorldTargets = [vec2(20, 10), vec2(20, 10), vec2(20, 10), vec2(20, 10)];
 // smoothed hand center target and center target joint
 let smoothedHandCenter = vec2(20, 10);
 let centerTargetJoint: LJS.Box2dObject | null = null;
@@ -170,7 +194,7 @@ function detectLoop(now?: number) {
         const lm = res.landmarks[0];
         // copy landmarks for debug overlay (normalized coordinates)
         lastLandmarks = lm.map((p: any) => ({ x: p.x, y: p.y, z: p.z ?? 0 }));
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 4; i++) {
           const idx = fingertipIndices[i];
           const l = lm[idx];
           if (l) {
@@ -201,6 +225,37 @@ function lmToWorld(lm: any) {
   const x = (1 - lm.x) * 40;
   const y = (1 - lm.y) * 20;
   return vec2(x, y);
+}
+
+function computeTipPullImpulse(tipIndex: number) {
+  const tip = limbNodes[tipIndex] && limbNodes[tipIndex][3];
+  if (!tip) return vec2(0, 0);
+  const target = tipWorldTargets[tipIndex] || smoothedFingerWorld[tipIndex];
+  const disp = target.subtract(tip.pos);
+  const dist = disp.length();
+  if (dist < PULL_MIN_DISTANCE) return vec2(0, 0);
+
+  const tipMass = tip.getMass() || 1;
+  const freq = TARGET_JOINT_FREQUENCY;
+  const wn = 2 * PI * freq;
+  const k = tipMass * wn * wn;
+  const c = 4 * PI * PULL_DAMPING_RATIO * tipMass * freq;
+
+  const vel = tip.getLinearVelocity();
+  const spring = disp.copy().scale(k);
+  const damp = vel.copy().scale(c);
+  const force = spring.add(damp.scale(-1));
+
+  const maxF = TARGET_JOINT_MAX_FORCE || 0;
+  if (maxF > 0) {
+    const mag = force.length();
+    if (mag > maxF) {
+      force.scale(maxF / mag);
+    }
+  }
+
+  const dt = (globalThis as any).timeDelta || 1 / 60;
+  return force.scale(dt);
 }
 
 export function initCrab(groundObject: LJS.Box2dObject) {
@@ -244,27 +299,35 @@ export function initCrab(groundObject: LJS.Box2dObject) {
   );
   rootAnchor.setGravityScale(0);
 
-  // create 5 limbs; each limb has 4 nodes (0..3) where node3 is the tip
+  // create 4 limbs; each limb has 4 nodes (0..3) where node3 is the tip
   const nodeDistances = [2.5, 4.0, 5.5, 7.0];
-  for (let i = 0; i < 5; i++) {
-    const angle = (i / 5) * PI * 2;
+  for (let i = 0; i < 4; i++) {
+    const angle = (i / 4) * PI * 2;
     const dir = vec2(Math.cos(angle), Math.sin(angle));
-    const nodes: any[] = [];
-    const joints: any[] = [];
+    const nodes: Box2dNode[] = [];
+    const joints: LJS.Box2dDistanceJoint[] = [];
 
     // create 4 nodes for this limb
     for (let j = 0; j < 4; j++) {
       const pos = crabCenter.pos.add(dir.scale(nodeDistances[j]));
-      const node = new LJS.Box2dObject(pos, vec2(0.6), 0, 0, hsl(i / 5, 0.8, 0.5), LJS.box2d.bodyTypeDynamic);
+      const node: Box2dNode = new LJS.Box2dObject(
+        pos,
+        vec2(0.6),
+        0,
+        0,
+        hsl(i / 4, 0.8, 0.5),
+        LJS.box2d.bodyTypeDynamic
+      );
       node.addCircle(0.6, vec2(), 1, 0.5, 0.2);
       node.setLinearDamping(3);
       node.setAngularDamping(4);
+      node.setBullet(true);
       // limb nodes should not be affected by global gravity—keep them free-floating
       node.setGravityScale(0);
       // make limb nodes light so collisions mainly affect tips, not the center
       node.setMass(0.4);
       // store previous velocity to estimate collision impulse on contact
-      (node as any).prevVel = vec2(0, 0);
+      node.prevVel = vec2(0, 0);
       // set filter so limb nodes don't collide with other limb nodes (category 2, ignore 2)
       node.setFilterData(2, 2);
       nodes.push(node);
@@ -289,7 +352,10 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     // tip target joint attached to the world/ground so the joint doesn't
     // directly apply forces to the crab center. Impulses from tip contacts
     // are detected and transferred artificially to the center.
-    const tj = new LJS.Box2dTargetJoint(nodes[3], groundObject, nodes[3].pos);
+    // Attach the tip target joint to the kinematic `rootAnchor` so the
+    // joint doesn't apply forces to the crab center and doesn't suppress
+    // collisions between the tip and the ground object.
+    const tj = new LJS.Box2dTargetJoint(nodes[3], rootAnchor, nodes[3].pos);
     if (tj.setMaxForce) {
       tj.setMaxForce(TARGET_JOINT_MAX_FORCE);
     }
@@ -298,16 +364,14 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     }
     tipTargetJoints.push(tj);
 
-    // install a contact callback on the tip to transfer collision impulses
+    nodes[3].touching = false;
+
+    // install contact callbacks on the tip to track touching and transfer collision impulses
     const tip = nodes[3];
-    (tip as any).beginContact = function (other: LJS.Box2dObject) {
-      if (!crabCenter) {
+    tip.beginContact = function (other: LJS.Box2dObject) {
+      if (!crabCenter || !other) {
         return;
       }
-      if (!other) {
-        return;
-      }
-      // ignore contacts with our own limb nodes or the root anchor
       for (const arr of limbNodes) {
         if (arr.includes(other)) {
           return;
@@ -316,16 +380,25 @@ export function initCrab(groundObject: LJS.Box2dObject) {
       if (other === rootAnchor) {
         return;
       }
-
-      // estimate impulse from pre-collision velocity vector (use full direction)
-      const preVel = (tip as any).prevVel || tip.getLinearVelocity();
+      const preVel = tip.prevVel || tip.getLinearVelocity();
       const speed = Math.hypot(preVel.x || 0, preVel.y || 0);
       if (speed > 0.05) {
-        // impulse vector = mass * -velocity (apply opposite of tip motion)
         const impulseVec = preVel.copy().scale(-tip.getMass());
-        // apply impulse to center at tip world position
-        crabCenter.applyAcceleration(impulseVec, tip.pos);
+        crabCenter.applyAcceleration(impulseVec.copy().scale(COLLISION_TRANSFER), tip.pos);
       }
+      tip.touching = true;
+    };
+
+    tip.endContact = function (other: LJS.Box2dObject) {
+      for (const arr of limbNodes) {
+        if (arr.includes(other)) {
+          return;
+        }
+      }
+      if (other === rootAnchor) {
+        return;
+      }
+      tip.touching = false;
     };
 
     limbNodes.push(nodes);
@@ -351,7 +424,6 @@ function drawDebugOverlay() {
 
   // finger chains (indices within MediaPipe 21-point model)
   const fingers = [
-    [1, 2, 3, 4],
     [5, 6, 7, 8],
     [9, 10, 11, 12],
     [13, 14, 15, 16],
@@ -401,19 +473,36 @@ export function updateCrab() {
   // Tip targets are computed relative to the hand center and then mapped
   // onto the crab's center position so global hand translation doesn't
   // move the crab unless the fingertips "crawl" relative to the wrist.
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     const raw = fingerWorld[i] || vec2(20, 10);
+    // how far the raw landmark actually moved since last tick
+    const rawDelta = raw.subtract(prevFingerWorld[i]);
+    prevFingerWorld[i] = raw.copy();
     // exponential smoothing: new = old*(1-alpha) + raw*alpha
     smoothedFingerWorld[i] = smoothedFingerWorld[i].scale(1 - SMOOTH_ALPHA).add(raw.scale(SMOOTH_ALPHA));
     const tj = tipTargetJoints[i];
-    // offset of fingertip from detected hand center
-    const offset = smoothedFingerWorld[i].add(smoothedHandCenter.scale(-1));
+    // offset of fingertip from detected hand center; apply global multiplier
+    const offset = smoothedFingerWorld[i]
+      .add(smoothedHandCenter.scale(-1))
+      .scale(FINGER_LENGTH_MULTIPLIER)
+      .add(FINGER_OFFSET);
     // map offset into game world relative to the crab center
     const target = crabCenter ? crabCenter.pos.add(offset) : smoothedFingerWorld[i];
     if (tj) {
       tj.setTarget(target);
     }
     tipWorldTargets[i] = target;
+    // apply pull impulse only when the tip is grounded, scaled by raw landmark movement
+    const tipObj = limbNodes[i] && limbNodes[i][3];
+    if (tipObj && tipObj.touching && crabCenter) {
+      const landmarkSpeed = rawDelta.length();
+      if (landmarkSpeed > 0.0001) {
+        const imp = computeTipPullImpulse(i);
+        if (imp.length() > 0.00001) {
+          crabCenter.applyAcceleration(imp.scale(-PULL_TRANSFER * landmarkSpeed), tipObj.pos);
+        }
+      }
+    }
   }
 
   // Do not directly drive the crab center to the absolute hand center anymore.
@@ -422,11 +511,19 @@ export function updateCrab() {
   if (rootAnchor && crabCenter) {
     rootAnchor.setPosition(crabCenter.pos);
   }
+  // enforce a hard max on the crab center linear velocity to avoid runaway speeds
+  if (crabCenter && CENTER_MAX_VELOCITY > 0) {
+    const v = crabCenter.getLinearVelocity();
+    const speed = Math.hypot(v.x || 0, v.y || 0);
+    if (speed > CENTER_MAX_VELOCITY) {
+      crabCenter.setLinearVelocity(v.scale(CENTER_MAX_VELOCITY / speed));
+    }
+  }
 
   // record current velocities to estimate impulses at the next contact
   for (const nodes of limbNodes) {
     for (const n of nodes) {
-      (n as any).prevVel = n.getLinearVelocity().copy();
+      n.prevVel = n.getLinearVelocity().copy();
     }
   }
 }
@@ -442,7 +539,7 @@ export function renderCrab() {
   // draw spring from hand center to crab center
   LJS.drawLine(crabCenter.pos, smoothedHandCenter, 0.12, hsl(0.1, 0.8, 0.6, 0.6));
 
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 4; i++) {
     const nodes = limbNodes[i];
     if (!nodes || nodes.length === 0) {
       continue;
@@ -461,13 +558,13 @@ export function renderCrab() {
         LJS.drawLine(node.pos, nodes[j + 1].pos, 0.12, LJS.BLACK);
       }
       // draw node as small circle
-      LJS.drawCircle(node.pos, 0.5, hsl(i / 5, 0.8, 0.5));
+      LJS.drawCircle(node.pos, 0.5, hsl(i / 4, 0.8, 0.5));
     }
 
     // draw fingertip debug target as a thin line from tip to the computed target
     const tip = nodes[nodes.length - 1];
     if (tip) {
-      LJS.drawLine(tip.pos, tipWorldTargets[i] || smoothedFingerWorld[i], 0.06, hsl(i / 5, 1, 0.6, 0.7));
+      LJS.drawLine(tip.pos, tipWorldTargets[i] || smoothedFingerWorld[i], 0.06, hsl(i / 4, 1, 0.6, 0.7));
     }
   }
 }
