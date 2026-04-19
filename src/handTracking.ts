@@ -13,6 +13,8 @@ interface Box2dNode extends LJS.Box2dObject {
   pendingBind?: LJS.Box2dObject | null;
   bindCooldownUntil?: number | null;
   lastBoundPos?: LJS.Vector2 | null;
+  // accumulated fingertip landmark movement while tip is bound
+  bindAccum?: LJS.Vector2 | null;
 }
 
 // Hand tracking + crab overlay for KaniAttack
@@ -131,18 +133,19 @@ const CENTER_TARGET_FREQUENCY = 8; // Hz (center spring)
 const CENTER_TARGET_MAX_FORCE = 800;
 const SMOOTH_ALPHA = 0.6; // exponential smoothing for landmark targets
 // Pull-to-center tuning
-const PULL_TRANSFER = 0.85; // fraction of tip pull impulse applied to center
+const PULL_TRANSFER = 0.45; // fraction of tip pull impulse applied to center
 const PULL_DAMPING_RATIO = 0.7; // damping ratio used when estimating tip damping
 const PULL_MIN_DISTANCE = 0.05; // ignore tiny tip-target offsets
 // fraction of collision-derived impulse applied to center (reduce explosions)
 const COLLISION_TRANSFER = 0.5;
 // how long (seconds) a tip stays rigidly bound to an object when it touches it
-const TIP_BIND_DURATION = 0.2;
+const TIP_BIND_DURATION = 0.3;
 // cooldown (seconds) after a tip is unbound before it can bind again
 const TIP_BIND_COOLDOWN = 0.2;
 // distance (world units) the tip must move away from the last bound position
 // before it is allowed to bind again
 const TIP_BIND_COOLDOWN_DISTANCE = 0.2;
+const BIND_FORCE_MULTIPLIER = 15.0;
 
 // Crab visual constants (visuals only — do not change physics)
 const CRAB_FILL = hsl(0.08, 0.95, 0.55); // orange fill
@@ -502,6 +505,7 @@ export function initCrab(groundObject: LJS.Box2dObject) {
     nodes[3].touching = false;
     nodes[3].boundJoint = null;
     nodes[3].boundTimer = null;
+    nodes[3].bindAccum = null;
 
     // install contact callbacks on the tip to track touching and transfer collision impulses
     const tip = nodes[3];
@@ -636,16 +640,31 @@ export function updateCrab() {
     for (const tip of pendingUnbindRequests) {
       try {
         if (!tip) continue;
+        // destroy existing bound joint if present
         if (tip.boundJoint) {
           try {
             tip.boundJoint.destroy();
           } catch (e) {}
           tip.boundJoint = null;
         }
+
+        // apply accumulated fingertip movement (if any) as an impulse to the crab center
+        try {
+          if (crabCenter && tip.bindAccum) {
+            const acc = tip.bindAccum.copy();
+            if (acc.length() > 0.00001) {
+              crabCenter.applyAcceleration(acc.scale(BIND_FORCE_MULTIPLIER), tip.pos);
+            }
+          }
+        } catch (e) {
+          console.warn('failed to apply bind impulse', e);
+        }
+
         // start cooldown and remember last bound position
         tip.bindCooldownUntil = now + TIP_BIND_COOLDOWN * 1000;
         tip.lastBoundPos = tip.pos.copy();
         tip.pendingBind = null;
+        tip.bindAccum = null;
       } catch (e) {
         console.warn('processing pending unbind failed', e);
       }
@@ -670,6 +689,12 @@ export function updateCrab() {
         try {
           const bind = new LJS.Box2dWeldJoint(tip, other, tip.pos);
           tip.boundJoint = bind;
+          // initialize accumulator for landmark movement during bind
+          try {
+            tip.bindAccum = vec2(0, 0);
+          } catch (e) {
+            tip.bindAccum = null;
+          }
         } catch (e) {
           console.warn('failed to create deferred tip bind joint', e);
         }
@@ -706,8 +731,14 @@ export function updateCrab() {
       tj.setTarget(target);
     }
     tipWorldTargets[i] = target;
-    // apply pull impulse only when the tip is grounded, scaled by raw landmark movement
+    // accumulate fingertip landmark movement while tip is bound (to apply impulse on unbind)
     const tipObj = limbNodes[i] && limbNodes[i][3];
+    if (tipObj && tipObj.boundJoint) {
+      if (rawDelta.length() > 0.000001) {
+        if (!tipObj.bindAccum) tipObj.bindAccum = vec2(0, 0);
+        tipObj.bindAccum = tipObj.bindAccum.add(rawDelta);
+      }
+    }
     if (tipObj && tipObj.touching && crabCenter) {
       const landmarkSpeed = rawDelta.length();
       if (landmarkSpeed > 0.0001) {

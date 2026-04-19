@@ -69,6 +69,18 @@ export function loadScene(_scene) {
         LJS.drawText('カニカニ手', this.pos.add(vec2(0, -3)), 2, LJS.WHITE, 0.24, LJS.BLACK);
       };
     }
+    // win text positioned near end of the level
+    {
+      const titleX = levelWidth - 12;
+      const titlePos = vec2(titleX, 18);
+      const titleObj = new LJS.EngineObject(titlePos, vec2(1), 0, 0, LJS.WHITE);
+      titleObj.gravityScale = 0;
+      titleObj.renderOrder = -2; // try to render behind most objects/crab
+      titleObj.render = function () {
+        LJS.drawText('WIN', this.pos, 3, LJS.WHITE, 0.36, LJS.BLACK);
+        LJS.drawText('カニやった', this.pos.add(vec2(0, -3)), 2, LJS.WHITE, 0.24, LJS.BLACK);
+      };
+    }
     new GameObjects.CarObject(vec2(10, 2));
     GameObjects.spawnBox(vec2(20, 0), vec2(10, 2), LJS.randColor(), LJS.box2d.bodyTypeStatic, false, -0.2);
     GameObjects.spawnPyramid(vec2(32, 0), 6);
